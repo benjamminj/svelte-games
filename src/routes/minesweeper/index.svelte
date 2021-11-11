@@ -94,7 +94,7 @@
 	}
 </script>
 
-<h1>minsweeper 💣💥</h1>
+<h1>minesweeper 💣💥</h1>
 
 <main>
 	<div>
