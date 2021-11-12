@@ -1,5 +1,5 @@
 import { assign, createMachine, interpret } from '@xstate/fsm'
-import { readable, writable } from 'svelte/store'
+import { readable } from 'svelte/store'
 import type { Readable } from 'svelte/store'
 import type { StateMachine } from '@xstate/fsm'
 import { getAdjacentBombs, getAdjacentIndexes } from './_state'
@@ -13,36 +13,6 @@ export type Cell = {
 	bomb: boolean
 	adjacent: number
 	status: CellStatus
-}
-
-//------------------------------------------------------------------------------
-// UTILITY FNS
-//------------------------------------------------------------------------------
-const getRingSize = (distance = 1) => distance * 8
-
-const _getRingSize = ({
-	x,
-	distance = 1,
-	size
-}: {
-	x: number
-	distance: number
-	size: number
-}) => {
-	const col = x % size
-	const row = Math.floor(x / size)
-	// Where is the cell situated in the grid?
-	const distanceFromLeftEdge = col
-	const distanceFromRightEdge = size - col - 1
-	const distanceFromTopEdge = row
-	const distanceFromBottomEdge = size - row - 1
-
-	console.log({
-		top: distanceFromTopEdge,
-		left: distanceFromLeftEdge,
-		bottom: distanceFromBottomEdge,
-		right: distanceFromRightEdge
-	})
 }
 
 //  0 1  2 3  4
@@ -69,18 +39,51 @@ type GameStates =
 	| { value: 'win'; context: Context }
 	| { value: 'lose'; context: Context }
 
+type RevealCellAction = { type: 'revealCell'; i: number }
 type GameActions =
-	| { type: 'revealCell'; i: number }
+	| RevealCellAction
 	| { type: 'flagCell'; i: number }
 	| { type: 'reset' }
 	| { type: 'win' }
 
+//------------------------------------------------------------------------------
+// ACTIONS
+//------------------------------------------------------------------------------
+const revealCell = assign((ctx: Context, ev: RevealCellAction) => {
+	ctx.grid[ev.i].status = 'touched'
+	return ctx
+})
+
+const revealAdjacentCells = assign((ctx: Context, ev: RevealCellAction) => {
+	const { size, grid } = ctx
+
+	const revealAdjacent = (i: number) => {
+		const indexesToCheck = getAdjacentIndexes({ i, size, grid })
+		indexesToCheck.forEach((i) => {
+			const cell = grid[i]
+			// recursively crawl hidden cells with 0 adjacent bombs and reveal
+			if (!cell.bomb && cell.adjacent === 0 && cell.status === 'initial') {
+				cell.status = 'touched'
+				revealAdjacent(i)
+			} else if (cell.status === 'initial') {
+				// otherwise, reveal the edges of the open space
+				cell.status = 'touched'
+			}
+		})
+	}
+
+	revealAdjacent(ev.i)
+	return ctx
+})
+
+//------------------------------------------------------------------------------
+// MACHINE
+//------------------------------------------------------------------------------
 export const machine = createMachine<Context, GameActions, GameStates>({
 	id: 'minesweeper',
 	initial: 'idle',
 	states: {
 		idle: {
-			// TODO: assign initial grid & bomb locations upon entry?
 			on: {
 				revealCell: {
 					target: 'playing',
@@ -96,8 +99,6 @@ export const machine = createMachine<Context, GameActions, GameStates>({
 								size: ctx.size,
 								grid: ctx.grid
 							})
-
-							console.log(indexesAroundPlayedSpace, ctx.bombIndices)
 
 							while (bombsPlaced < ctx.bombIndices.length && j <= 24) {
 								// if we're in the empty space around the played tile,
@@ -131,52 +132,15 @@ export const machine = createMachine<Context, GameActions, GameStates>({
 							return ctx
 						}),
 						// flip the cell to be touched now that we're playing.
-						assign((ctx, ev) => {
-							ctx.grid[ev.i].status = 'touched'
-							return ctx
-						}),
+						revealCell,
 						// Reveal any adjacent cells around the cell played
-						assign((ctx, ev) => {
-							const { size, grid } = ctx
-
-							const revealAdjacent = (i: number) => {
-								const indexesToCheck = getAdjacentIndexes({ i, size, grid })
-								indexesToCheck.forEach((i) => {
-									const cell = grid[i]
-									// recursively crawl hidden cells with 0 adjacent bombs and reveal
-									if (cell.adjacent === 0 && cell.status === 'initial') {
-										cell.status = 'touched'
-										revealAdjacent(i)
-									} else {
-										// otherwise, reveal the edges of the open space
-										cell.status = 'touched'
-									}
-								})
-							}
-
-							revealAdjacent(ev.i)
-							console.log('reveal adjacent cells here??')
-							return ctx
-						})
+						revealAdjacentCells
 					]
 				}
 			}
 		},
 		playing: {
-			entry: (ctx, ev) => {
-				// console.log('entry', ...args)
-				console.log(ev.type)
-				if (ev.type === 'flagCell' && ev.i === 24) {
-					console.log('yay!!!')
-					machine.transition('playing', { type: 'win' })
-				}
-			},
 			on: {
-				win: {
-					target: 'win',
-					actions: () => console.log('here??')
-					// TODO: check for win conditions??
-				},
 				flagCell: [
 					{
 						target: 'playing',
@@ -192,12 +156,21 @@ export const machine = createMachine<Context, GameActions, GameStates>({
 							})
 						]
 					}
-					// {
-					// 	target: 'win'
-					// 	// TODO: win condition if flagging (flagged last cell, exact num
-					// 	// of flags as num of bombs)
-					// }
 				],
+				win: {
+					target: 'win',
+					cond: (ctx, ev) => {
+						for (const cell of ctx.grid) {
+							if (cell.status === 'initial') return false
+							// if it's a bomb, it must be flagged
+							if (cell.bomb && cell.status !== 'flagged') return false
+							// if it's not a bomb, it must be revealed
+							if (!cell.bomb && cell.status !== 'touched') return false
+						}
+
+						return true
+					}
+				},
 				revealCell: [
 					{
 						target: 'lose',
@@ -211,71 +184,13 @@ export const machine = createMachine<Context, GameActions, GameStates>({
 							// You can only reveal a cell that's unrevealed AND unflagged
 							return cell.status === 'initial'
 						},
-						actions: [
-							assign((ctx, ev) => {
-								ctx.grid[ev.i].status = 'touched'
-								return ctx
-							}),
-							assign((ctx, ev) => {
-								const { size, grid } = ctx
-
-								const revealAdjacent = (i: number) => {
-									const indexesToCheck = getAdjacentIndexes({ i, size, grid })
-									indexesToCheck.forEach((i) => {
-										const cell = grid[i]
-										// recursively crawl hidden cells with 0 adjacent bombs and reveal
-										if (cell.adjacent === 0 && cell.status === 'initial') {
-											cell.status = 'touched'
-											revealAdjacent(i)
-										} else {
-											// otherwise, reveal the edges of the open space
-											cell.status = 'touched'
-										}
-									})
-								}
-
-								revealAdjacent(ev.i)
-								return ctx
-							})
-						]
-					},
-					{
-						target: 'win',
-						cond: (ctx, ev) => {
-							return ev.i === 25
-							// what are the win conditions?
-							// all bombs in the grid are flagged
-							// every cell except the current one is touched
-							// TODO: might need to be every cell except the current _AND_
-							// any adjacent cells that are 0
-							// let hasWon = false
-
-							// return hasWon
-						}
-						// actions: [
-						// 	(ctx, ev) => {
-						// 		machine.transition('win')
-						// 	}
-						// ]
+						actions: [revealCell, revealAdjacentCells]
 					}
 				]
 			}
 		},
-		win: {
-			entry: () => console.log('>> win!!!'),
-			on: {
-				reset: {
-					target: 'idle'
-				}
-			}
-		},
-		lose: {
-			on: {
-				reset: {
-					target: 'idle'
-				}
-			}
-		}
+		win: {},
+		lose: {}
 	}
 })
 

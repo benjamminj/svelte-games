@@ -1,7 +1,7 @@
 import { interpret } from '@xstate/fsm'
 import { Cell, createStore, GameMachineState, machine } from '../_store'
 
-describe.skip('createStore', () => {
+describe('createStore', () => {
 	describe('STATE: IDLE', () => {
 		test('bootstraps the game with a full grid', () => {
 			const store = createStore({ size: 5, bombs: 2 })
@@ -19,44 +19,10 @@ describe.skip('createStore', () => {
 			store.send({ type: 'revealCell', i: 1 })
 			expect(state.value).toEqual('playing')
 		})
-
-		// TODO: perhaps instead of using the `createStore` it's more robust
-		// to instantiate the state machine directly so that we can control _exactly_
-		// where the bombs are distributed
-		test.only('allows starting the game', () => {
-			const store = createStore({ size: 5, bombs: 2 })
-
-			let state: GameMachineState
-			store.state.subscribe((x) => {
-				state = x
-			})
-
-			expect(state.value).toEqual('idle')
-
-			// Play the first cell
-			store.send({ type: 'revealCell', i: 12 })
-			expect(state.value).toEqual('playing')
-
-			// Check that the cell was made visible
-			expect(state.context.grid[12].status).toEqual('touched')
-
-			// Check that the bombs have been properly distributed across the grid
-			let bombsCount = 0
-			for (const cell of state.context.grid) {
-				if (cell.bomb) bombsCount++
-			}
-			expect(bombsCount).toEqual(2)
-
-			// Check that the touched cell is 0 adjacent bombs
-			expect(state.context.grid[12].adjacent).toEqual(0)
-
-			// Check that any adjacent 0 cells have been revealed as well.
-			// TODO: should be in lower-level machine action tests.
-		})
 	})
 })
 
-describe.skip('machine', () => {
+describe('machine', () => {
 	const createGrid = (): Cell[] => {
 		return Array.from({ length: 25 }, () => ({
 			bomb: false,
@@ -101,7 +67,7 @@ describe.skip('machine', () => {
 		})
 	})
 
-	describe.only('STATE: PLAYING', () => {
+	describe('STATE: PLAYING', () => {
 		it('should allow revealing the cell and any adjacent empty cells', () => {
 			const grid = createGrid()
 			const service = interpret(machine).start({
@@ -195,7 +161,7 @@ describe.skip('machine', () => {
 			expect(service.state.value).toEqual('playing')
 		})
 
-		it.only('should allow transitioning to the "win" state', () => {
+		it('should allow transitioning to the "win" state', () => {
 			const grid = createGrid()
 			const service = interpret(machine).start({
 				value: 'idle',
@@ -219,8 +185,45 @@ describe.skip('machine', () => {
 				}
 			})
 
-			// service.send({ type: 'win' })
+			service.send({ type: 'win' })
 
+			expect(service.state.value).toEqual('win')
+		})
+
+		it('should not allow transitions to "win" state if win conditions are not met', () => {
+			const grid = createGrid()
+			const service = interpret(machine).start({
+				value: 'idle',
+				context: { grid, bombIndices: [0, 8, 16, 20], size: 5 }
+			})
+
+			// bombs will be placed at indexes 2, 12, 20, & 24 based on this move
+			// 0  1  x  3  4
+			// 5  6  7  8  9
+			// 10 11 x  13 14
+			// 15 16 17 18 19
+			// x  21 22 23 x
+			service.send({ type: 'revealCell', i: 0 })
+
+			// Some cells still in "initial" state
+			service.send({ type: 'win' })
+			expect(service.state.value).toEqual('playing')
+
+			const bombIndices = [2, 12, 20, 24]
+			service.state.context.grid.forEach((_, i) => {
+				// Check for a win before each move, this will never "win" under the current
+				// win conditions since the final cell has not been played.
+				service.send({ type: 'win' })
+				expect(service.state.value).toEqual('playing')
+
+				if (bombIndices.includes(i)) {
+					service.send({ type: 'flagCell', i })
+				} else {
+					service.send({ type: 'revealCell', i })
+				}
+			})
+
+			service.send({ type: 'win' })
 			expect(service.state.value).toEqual('win')
 		})
 
